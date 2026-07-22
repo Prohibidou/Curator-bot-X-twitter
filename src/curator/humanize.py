@@ -4,9 +4,12 @@ from curator.humanize_math import bezier_path, jittered_delay, dwell_seconds
 
 
 class Human:
-    def __init__(self, cfg, rng=None):
+    def __init__(self, cdp, cfg, rng=None):
+        self.cdp = cdp
         self.cfg = cfg
         self.rng = rng or random.Random()
+        self._x = cfg.window_width // 2
+        self._y = cfg.window_height // 2
 
     def pause(self):
         time.sleep(jittered_delay(self.cfg.min_delay_s, self.cfg.max_delay_s, self.rng))
@@ -15,18 +18,17 @@ class Human:
         time.sleep(dwell_seconds(text))
 
     def move_and_click(self, x, y):
-        import pyautogui
-        start = pyautogui.position()
         steps = self.rng.randint(18, 32)
-        for px, py in bezier_path((start[0], start[1]), (x, y), steps, self.rng):
-            pyautogui.moveTo(px, py, duration=0)
+        for px, py in bezier_path((self._x, self._y), (x, y), steps, self.rng):
+            self.cdp.move(px, py)
             time.sleep(0.005)
+        self._x, self._y = x, y
         self.pause()
-        pyautogui.click()
+        self.cdp.click(x, y)
 
     def scroll(self, clicks):
-        import pyautogui
-        step = -120 if clicks > 0 else 120
+        cx, cy = self.cfg.window_width // 2, self.cfg.window_height // 2
+        dy = 300 if clicks > 0 else -300
         for _ in range(abs(clicks)):
-            pyautogui.scroll(step)
+            self.cdp.scroll(cx, cy, dy)
             time.sleep(jittered_delay(0.2, 0.8, self.rng))
