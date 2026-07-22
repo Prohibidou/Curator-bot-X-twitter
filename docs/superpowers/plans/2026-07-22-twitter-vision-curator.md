@@ -1,449 +1,184 @@
-# Twitter Vision Curator Implementation Plan
+# Twitter Vision Curator Implementation Plan (v2)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Build a local, no-API desktop agent that browses Twitter/X purely by computer vision + real OS input, collects the most popular posts and replies on a given topic, screenshots them, and writes a Spanish narrative report.
+**Goal:** Build a Python "hands & eyes" toolkit that a live Claude Code session drives to browse Twitter/X by vision + real OS input, collect the most popular posts/replies on a topic, screenshot them, and render a Spanish report Claude writes.
 
-**Architecture:** Plain Chrome is launched as an ordinary process (no automation framework) and driven by real mouse/keyboard input. Perception is 100% screenshot-based: qwen2.5vl (Ollama) for layout + Tesseract for exact text/numbers. Pure-logic modules (models, ranker, number parsing, humanize math, report rendering) are TDD-tested against fixtures; the browser/vision/agent glue is validated manually.
+**Architecture:** The brain is the live Claude Code session (screenshot → look → decide → act loop). The toolkit is CLI subcommands: launch plain Chrome, human mouse/scroll, full-screen screenshot, crop, read-URL-from-clipboard, render report. No local model, no Ollama, no Tesseract, no automation framework, no DOM.
 
-**Tech Stack:** Python 3.11+, Ollama (qwen2.5vl + a text model), Tesseract OCR, `pyautogui`, `pygetwindow`, `mss`, `Pillow`, `pytesseract`, `ollama` python client, `pytest`.
+**Tech Stack:** Python 3.11+, `pyautogui`, `pygetwindow`, `mss`, `Pillow`, `pytest`.
 
 ## Global Constraints
+- Python 3.11+ on Windows; Google Chrome installed.
+- **No APIs beyond Claude Code itself; no local model; no DOM/HTML; no automation framework; no cloaking** (no fingerprint/canvas spoofing, no proxy/account rotation, no CAPTCHA solving).
+- Report language **Spanish**; code/tests/comments English.
+- Volume defaults `max_posts=18`, `max_replies=8`; relative top-N ranking.
+- Toolkit sets the process **DPI-aware** and captures the **full primary screen**, so screenshot pixel == `pyautogui` screen coordinate.
+- Human-scale pacing on every input action.
+- Frequent commits; conventional messages; stage explicit files (never `git add -A`; keep `__pycache__` out).
 
-- Python 3.11+ on Windows. Google Chrome installed.
-- **No APIs**: no Twitter/X API, no cloud LLM. Only local Ollama + Tesseract.
-- **No DOM/HTML access** ever. All reading is from screenshots.
-- **No automation framework** (no Playwright/Selenium/CDP) and **no cloaking** (no fingerprint/canvas spoofing, no proxy or account rotation, no CAPTCHA solving).
-- Report language: **Spanish**. Code/tests/comments: English.
-- Default volume: `max_posts=18`, `max_replies=8`. Ranking is relative (top-N by engagement).
-- Human-scale pacing everywhere; a circuit-breaker stops on any rate-limit / unusual-activity / login-wall screen.
-- Vision model default `qwen2.5vl`; configurable.
-- Frequent commits; conventional commit messages.
+**Status:** Task 1 (models, config) already complete on branch `feature/vision-curator` (commit 88c64e3). `models.py` provides dataclasses `Post`, `Reply`, `Element`, `ScreenModel`, `RunResult`; `config.py` provides `Config`. `Element`/`ScreenModel` are now unused (harmless; left in place).
 
 ---
 
-### Task 1: Project scaffold, config, and data models
+### Task 2: Trim dependencies and config for the v2 engine
 
 **Files:**
-- Create: `pyproject.toml`
-- Create: `requirements.txt`
-- Create: `src/curator/__init__.py`
-- Create: `src/curator/models.py`
-- Create: `src/curator/config.py`
-- Create: `tests/__init__.py`
-- Create: `tests/test_models.py`
-- Create: `README.md`
+- Modify: `requirements.txt`
+- Modify: `src/curator/config.py`
+- Test: `tests/test_config.py` (create)
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces:
-  - `models.Reply`, `models.Post`, `models.Element`, `models.ScreenModel`, `models.RunResult` (dataclasses, fields as below).
-  - `config.Config` dataclass with `.default()` classmethod.
+- Consumes: existing `Config`.
+- Produces: `Config` WITHOUT `vision_model` / `text_model` fields; all other fields unchanged.
 
-- [ ] **Step 1: Write `requirements.txt`**
+- [ ] **Step 1: Write the failing test** `tests/test_config.py`
+
+```python
+import dataclasses
+from curator.config import Config
+
+
+def test_defaults_present():
+    c = Config.default()
+    assert c.max_posts == 18
+    assert c.max_replies == 8
+    assert c.output_dir == "output"
+    assert c.action_budget == 300
+
+
+def test_local_model_fields_removed():
+    names = {f.name for f in dataclasses.fields(Config)}
+    assert "vision_model" not in names
+    assert "text_model" not in names
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_config.py -v`
+Expected: FAIL on `test_local_model_fields_removed` (fields still present).
+
+- [ ] **Step 3: Edit `src/curator/config.py`** — remove the two lines `vision_model: str = "qwen2.5vl"` and `text_model: str = "qwen2.5:7b"`. Leave every other field.
+
+- [ ] **Step 4: Edit `requirements.txt`** to exactly:
 
 ```text
 pyautogui==0.9.54
 PyGetWindow==0.0.9
 mss==9.0.1
 Pillow==10.4.0
-pytesseract==0.3.13
-ollama==0.3.3
 pytest==8.3.3
 ```
 
-- [ ] **Step 2: Write `pyproject.toml`**
+- [ ] **Step 5: Run tests to verify they pass**
 
-```toml
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+Run: `python -m pytest tests/test_config.py -v`
+Expected: PASS (2 passed)
 
-[project]
-name = "twitter-vision-curator"
-version = "0.1.0"
-requires-python = ">=3.11"
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
-```
-
-- [ ] **Step 3: Write the failing test** `tests/test_models.py`
-
-```python
-from curator.models import Post, Reply, Element, ScreenModel, RunResult
-
-
-def test_post_defaults():
-    p = Post(author_handle="@a", author_name="A", text="hi",
-             likes=10, replies=2, reposts=1)
-    assert p.permalink == ""
-    assert p.has_image is False
-    assert p.top_replies == []
-    assert p.engagement_confidence == 1.0
-
-
-def test_reply_and_screenmodel():
-    r = Reply(author_handle="@b", author_name="B", text="yo", likes=5)
-    e = Element(kind="post", bbox=(0, 0, 100, 50), text="yo",
-                numbers={"likes": (5, 0.9)})
-    sm = ScreenModel(elements=[e])
-    assert r.likes == 5
-    assert sm.elements[0].numbers["likes"] == (5, 0.9)
-
-
-def test_runresult():
-    rr = RunResult(topic="x", timestamp="2026-07-22", posts=[], summary_text="",
-                   output_dir="out")
-    assert rr.posts == []
-```
-
-- [ ] **Step 4: Run test to verify it fails**
-
-Run: `pytest tests/test_models.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.models'`
-
-- [ ] **Step 5: Write `src/curator/__init__.py`** (empty file) and `src/curator/models.py`
-
-```python
-from dataclasses import dataclass, field
-from typing import Optional
-
-
-@dataclass
-class Reply:
-    author_handle: str
-    author_name: str
-    text: str
-    likes: int
-    timestamp: str = ""
-    screenshot_path: str = ""
-    engagement_confidence: float = 1.0
-    parent_post_permalink: str = ""
-
-
-@dataclass
-class Post:
-    author_handle: str
-    author_name: str
-    text: str
-    likes: int
-    replies: int
-    reposts: int
-    timestamp: str = ""
-    permalink: str = ""
-    has_image: bool = False
-    screenshot_path: str = ""
-    image_screenshot_paths: list = field(default_factory=list)
-    engagement_confidence: float = 1.0
-    top_replies: list = field(default_factory=list)
-
-
-@dataclass
-class Element:
-    kind: str            # 'post' | 'reply' | 'button' | 'image'
-    bbox: tuple          # (x, y, w, h) in screen coordinates
-    text: str = ""
-    numbers: dict = field(default_factory=dict)   # {'likes': (int, confidence), ...}
-
-
-@dataclass
-class ScreenModel:
-    elements: list = field(default_factory=list)  # list[Element]
-    raw_screenshot_path: str = ""
-
-
-@dataclass
-class RunResult:
-    topic: str
-    timestamp: str
-    posts: list = field(default_factory=list)     # list[Post]
-    summary_text: str = ""
-    output_dir: str = ""
-```
-
-- [ ] **Step 6: Write `src/curator/config.py`**
-
-```python
-from dataclasses import dataclass, field
-
-
-@dataclass
-class Config:
-    max_posts: int = 18
-    max_replies: int = 8
-    vision_model: str = "qwen2.5vl"
-    text_model: str = "qwen2.5:7b"
-    output_dir: str = "output"
-    action_budget: int = 300
-    min_delay_s: float = 1.0
-    max_delay_s: float = 5.0
-    window_left: int = 0
-    window_top: int = 0
-    window_width: int = 1280
-    window_height: int = 1000
-    chrome_profile_dir: str = "chrome-profile"
-    min_confidence: float = 0.4
-
-    @classmethod
-    def default(cls) -> "Config":
-        return cls()
-```
-
-- [ ] **Step 7: Write `README.md`** with setup + risk notice
-
-```markdown
-# Twitter Vision Curator
-
-Local, no-API agent that browses X/Twitter by computer vision only and writes a
-Spanish report of the most popular posts/replies on a topic.
-
-## WARNING
-Automating a logged-in account violates X's Terms of Service. Use a throwaway
-account you are willing to lose. This tool paces itself like a human to avoid
-being blocked; it does NOT and cannot guarantee you won't be detected or
-suspended.
-
-## Setup
-1. Install Python 3.11+ and Google Chrome.
-2. `pip install -r requirements.txt`
-3. Install Tesseract OCR and ensure `tesseract` is on PATH.
-4. Install Ollama; `ollama pull qwen2.5vl` and `ollama pull qwen2.5:7b`.
-5. First run opens Chrome — log in to your throwaway account by hand.
-
-## Run
-`python -m curator.main "your topic here"`
-```
-
-- [ ] **Step 8: Run tests to verify they pass**
-
-Run: `pytest tests/test_models.py -v`
-Expected: PASS (3 passed)
-
-- [ ] **Step 9: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add -A
-git commit -m "feat: project scaffold, config, and data models"
+git add requirements.txt src/curator/config.py tests/test_config.py
+git commit -m "refactor: drop local-model deps and config fields for Claude-driven engine"
 ```
 
 ---
 
-### Task 2: Engagement-count parsing (`parse_count`)
+### Task 3: Screenshot capture and crop (`screenshots`)
 
 **Files:**
-- Create: `src/curator/counts.py`
-- Test: `tests/test_counts.py`
+- Create: `src/curator/screenshots.py`
+- Test: `tests/test_screenshots.py`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: `counts.parse_count(text: str) -> tuple[int | None, float]` returning `(value, confidence)`. Confidence is `0.0` when unparseable, `0.9` for clean parses, `0.6` for noisy/ambiguous OCR text.
-
-- [ ] **Step 1: Write the failing test** `tests/test_counts.py`
-
-```python
-from curator.counts import parse_count
-
-
-def test_plain_integer():
-    assert parse_count("1234") == (1234, 0.9)
-
-
-def test_comma_grouped():
-    assert parse_count("1,234") == (1234, 0.9)
-
-
-def test_k_suffix():
-    assert parse_count("12.4K") == (12400, 0.9)
-
-
-def test_m_suffix():
-    assert parse_count("3.2M") == (3200000, 0.9)
-
-
-def test_empty_is_unparseable():
-    assert parse_count("") == (None, 0.0)
-
-
-def test_garbage_is_unparseable():
-    assert parse_count("like") == (None, 0.0)
-
-
-def test_noisy_but_recoverable_lower_confidence():
-    # OCR noise around a number -> recoverable but less trusted
-    value, conf = parse_count("~12K ")
-    assert value == 12000
-    assert conf == 0.6
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_counts.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.counts'`
-
-- [ ] **Step 3: Write `src/curator/counts.py`**
-
-```python
-import re
-
-_CLEAN = re.compile(r"^\s*([0-9][0-9,\.]*)\s*([KkMm]?)\s*$")
-_NOISY = re.compile(r"([0-9][0-9,\.]*)\s*([KkMm]?)")
-_MULT = {"": 1, "k": 1_000, "m": 1_000_000}
-
-
-def _to_int(num: str, suffix: str) -> int | None:
-    num = num.replace(",", "")
-    try:
-        base = float(num)
-    except ValueError:
-        return None
-    return int(round(base * _MULT[suffix.lower()]))
-
-
-def parse_count(text: str) -> tuple[int | None, float]:
-    """Parse an engagement count like '12.4K' -> (12400, confidence)."""
-    if text is None:
-        return (None, 0.0)
-    m = _CLEAN.match(text)
-    if m:
-        value = _to_int(m.group(1), m.group(2))
-        return (value, 0.9) if value is not None else (None, 0.0)
-    m = _NOISY.search(text)
-    if m:
-        value = _to_int(m.group(1), m.group(2))
-        return (value, 0.6) if value is not None else (None, 0.0)
-    return (None, 0.0)
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_counts.py -v`
-Expected: PASS (7 passed)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add -A
-git commit -m "feat: engagement-count parser with confidence"
-```
-
----
-
-### Task 3: Popularity ranking (`ranker`)
-
-**Files:**
-- Create: `src/curator/ranker.py`
-- Test: `tests/test_ranker.py`
-
-**Interfaces:**
-- Consumes: `models.Post`, `models.Reply`, `config.Config.min_confidence`.
 - Produces:
-  - `ranker.top_posts(posts: list[Post], n: int, min_confidence: float = 0.4) -> list[Post]`
-  - `ranker.top_replies(replies: list[Reply], m: int, min_confidence: float = 0.4) -> list[Reply]`
-  - Ordering: descending by likes; posts tie-break by reposts then replies; entries whose `engagement_confidence < min_confidence` are dropped; entries with `likes is None`-equivalent (represented as `likes=-1`) are dropped.
+  - `screenshots.set_dpi_aware() -> None` — makes the process DPI-aware on Windows (no-op elsewhere / on failure).
+  - `screenshots.capture_screen(path: str) -> str` — grab the full primary monitor to a PNG at `path`; return `path`.
+  - `screenshots.crop_and_save(image_path: str, bbox: tuple[int,int,int,int], out: str) -> str` — crop `(x,y,w,h)` from the PNG and save to `out`; return `out`. **This is the unit-tested part.**
 
-- [ ] **Step 1: Write the failing test** `tests/test_ranker.py`
+- [ ] **Step 1: Write the failing test** `tests/test_screenshots.py`
 
 ```python
-from curator.models import Post, Reply
-from curator.ranker import top_posts, top_replies
+from PIL import Image
+from curator.screenshots import crop_and_save
 
 
-def _post(likes, reposts=0, replies=0, conf=1.0, handle="@a"):
-    return Post(author_handle=handle, author_name="A", text="t",
-                likes=likes, replies=replies, reposts=reposts,
-                engagement_confidence=conf)
-
-
-def test_top_posts_orders_by_likes_desc():
-    posts = [_post(10), _post(100), _post(50)]
-    result = top_posts(posts, 2)
-    assert [p.likes for p in result] == [100, 50]
-
-
-def test_top_posts_tie_breaks_by_reposts():
-    posts = [_post(10, reposts=1), _post(10, reposts=9)]
-    result = top_posts(posts, 2)
-    assert [p.reposts for p in result] == [9, 1]
-
-
-def test_top_posts_drops_low_confidence():
-    posts = [_post(100, conf=0.2), _post(5, conf=0.9)]
-    result = top_posts(posts, 5)
-    assert [p.likes for p in result] == [5]
-
-
-def test_top_posts_drops_unreadable_likes():
-    posts = [_post(-1, conf=0.9), _post(5, conf=0.9)]
-    result = top_posts(posts, 5)
-    assert [p.likes for p in result] == [5]
-
-
-def test_top_replies_orders_and_limits():
-    replies = [Reply("@a", "A", "t", likes=3),
-               Reply("@b", "B", "t", likes=30),
-               Reply("@c", "C", "t", likes=15)]
-    result = top_replies(replies, 2)
-    assert [r.likes for r in result] == [30, 15]
+def test_crop_and_save(tmp_path):
+    src = tmp_path / "src.png"
+    Image.new("RGB", (200, 200), "white").save(src)
+    out = crop_and_save(str(src), (10, 10, 50, 40), str(tmp_path / "c.png"))
+    saved = Image.open(out)
+    assert saved.size == (50, 40)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_ranker.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.ranker'`
+Run: `python -m pytest tests/test_screenshots.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'curator.screenshots'`
 
-- [ ] **Step 3: Write `src/curator/ranker.py`**
+- [ ] **Step 3: Write `src/curator/screenshots.py`**
 
 ```python
-from curator.models import Post, Reply
+import os
+from PIL import Image
 
 
-def _eligible(likes: int, confidence: float, min_confidence: float) -> bool:
-    return likes is not None and likes >= 0 and confidence >= min_confidence
+def set_dpi_aware() -> None:
+    """Make the process DPI-aware so screenshot pixels match pyautogui coords."""
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 
-def top_posts(posts: list[Post], n: int, min_confidence: float = 0.4) -> list[Post]:
-    eligible = [p for p in posts
-                if _eligible(p.likes, p.engagement_confidence, min_confidence)]
-    eligible.sort(key=lambda p: (p.likes, p.reposts, p.replies), reverse=True)
-    return eligible[:n]
+def capture_screen(path: str) -> str:
+    import mss
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with mss.mss() as sct:
+        mon = sct.monitors[1]  # primary monitor
+        shot = sct.grab(mon)
+        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        img.save(path)
+    return path
 
 
-def top_replies(replies: list[Reply], m: int, min_confidence: float = 0.4) -> list[Reply]:
-    eligible = [r for r in replies
-                if _eligible(r.likes, r.engagement_confidence, min_confidence)]
-    eligible.sort(key=lambda r: r.likes, reverse=True)
-    return eligible[:m]
+def crop_and_save(image_path: str, bbox, out: str) -> str:
+    x, y, w, h = bbox
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    Image.open(image_path).crop((x, y, x + w, y + h)).save(out)
+    return out
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_ranker.py -v`
-Expected: PASS (5 passed)
+Run: `python -m pytest tests/test_screenshots.py -v`
+Expected: PASS (1 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A
-git commit -m "feat: relative popularity ranking for posts and replies"
+git add src/curator/screenshots.py tests/test_screenshots.py
+git commit -m "feat: DPI-aware full-screen capture and crop"
 ```
 
 ---
 
-### Task 4: Human-motion math (`humanize` pure functions)
+### Task 4: Human-motion math (`humanize_math`)
 
 **Files:**
 - Create: `src/curator/humanize_math.py`
 - Test: `tests/test_humanize_math.py`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces:
-  - `humanize_math.bezier_path(start: tuple[int,int], end: tuple[int,int], steps: int, rng) -> list[tuple[int,int]]` — quadratic Bézier with a randomized control point; first point == start, last == end, length == steps.
-  - `humanize_math.jittered_delay(lo: float, hi: float, rng) -> float` — value in `[lo, hi]`.
-  - `humanize_math.dwell_seconds(text: str, wps: float = 3.5) -> float` — reading time estimate, minimum 0.4s.
-- Note: `rng` is a `random.Random` instance so tests can seed it.
+- Produces (`rng` is a `random.Random` so tests seed it):
+  - `bezier_path(start, end, steps, rng) -> list[tuple[int,int]]` — first==start, last==end, len==steps, curved.
+  - `jittered_delay(lo, hi, rng) -> float` — in `[lo,hi]`.
+  - `dwell_seconds(text, wps=3.5) -> float` — reading time, min 0.4.
 
 - [ ] **Step 1: Write the failing test** `tests/test_humanize_math.py`
 
@@ -463,7 +198,6 @@ def test_bezier_endpoints_and_length():
 def test_bezier_is_curved_not_straight():
     rng = random.Random(2)
     path = bezier_path((0, 0), (100, 0), steps=50, rng=rng)
-    # A straight horizontal move would keep y == 0 throughout.
     assert any(p[1] != 0 for p in path)
 
 
@@ -474,17 +208,15 @@ def test_jittered_delay_within_bounds():
         assert 1.0 <= d <= 5.0
 
 
-def test_dwell_scales_with_length_and_has_minimum():
+def test_dwell_scales_and_has_minimum():
     assert dwell_seconds("") >= 0.4
-    long = dwell_seconds("word " * 100)
-    short = dwell_seconds("word")
-    assert long > short
+    assert dwell_seconds("word " * 100) > dwell_seconds("word")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_humanize_math.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.humanize_math'`
+Run: `python -m pytest tests/test_humanize_math.py -v`
+Expected: FAIL with `ModuleNotFoundError`.
 
 - [ ] **Step 3: Write `src/curator/humanize_math.py`**
 
@@ -493,7 +225,6 @@ def bezier_path(start, end, steps, rng):
     """Quadratic Bezier from start to end with a randomized control point."""
     (x0, y0), (x1, y1) = start, end
     mx, my = (x0 + x1) / 2, (y0 + y1) / 2
-    # Perpendicular-ish offset so the path bows off the straight line.
     offset = rng.uniform(-0.3, 0.3)
     cx = mx + (y1 - y0) * offset
     cy = my - (x1 - x0) * offset
@@ -509,7 +240,7 @@ def bezier_path(start, end, steps, rng):
 
 
 def jittered_delay(lo, hi, rng):
-    """Non-uniform delay in [lo, hi] biased toward the low end (triangular)."""
+    """Non-uniform delay in [lo, hi], biased toward the low end."""
     return rng.triangular(lo, hi, lo + (hi - lo) * 0.35)
 
 
@@ -521,473 +252,37 @@ def dwell_seconds(text, wps=3.5):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_humanize_math.py -v`
+Run: `python -m pytest tests/test_humanize_math.py -v`
 Expected: PASS (4 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A
-git commit -m "feat: human-motion math (bezier path, jittered delays, dwell)"
+git add src/curator/humanize_math.py tests/test_humanize_math.py
+git commit -m "feat: human-motion math (bezier path, jittered delay, dwell)"
 ```
 
 ---
 
-### Task 5: Report rendering (`report` pure functions)
-
-**Files:**
-- Create: `src/curator/report.py`
-- Test: `tests/test_report.py`
-
-**Interfaces:**
-- Consumes: `models.Post`, `models.Reply`, `models.RunResult`.
-- Produces:
-  - `report.render_markdown(run: RunResult) -> str`
-  - `report.render_html(run: RunResult) -> str` (screenshots embedded as base64 when the file exists; otherwise the image is skipped)
-  - `report.synthesize(run: RunResult, chat_fn) -> str` — builds a Spanish-language prompt from the collected text and calls `chat_fn(prompt: str) -> str`. `chat_fn` is injected so it can be tested without Ollama; the real caller passes an Ollama-backed function (Task 6).
-  - `report.write_outputs(run: RunResult, base_dir: str) -> None` — writes `report.md`, `report.html`, `run.json`.
-
-- [ ] **Step 1: Write the failing test** `tests/test_report.py`
-
-```python
-from curator.models import Post, Reply, RunResult
-from curator.report import render_markdown, render_html, synthesize
-
-
-def _run():
-    reply = Reply("@r", "R", "great point", likes=42)
-    post = Post("@a", "Alice", "hello world", likes=100, replies=3, reposts=5,
-                permalink="https://x.com/a/status/1", top_replies=[reply])
-    return RunResult(topic="mars", timestamp="2026-07-22",
-                     posts=[post], summary_text="Resumen en español.")
-
-
-def test_render_markdown_includes_topic_post_and_reply():
-    md = render_markdown(_run())
-    assert "mars" in md
-    assert "hello world" in md
-    assert "great point" in md
-    assert "https://x.com/a/status/1" in md
-    assert "Resumen en español." in md
-
-
-def test_render_html_is_selfcontained_document():
-    html = render_html(_run())
-    assert "<html" in html.lower()
-    assert "hello world" in html
-    assert "Resumen en español." in html
-
-
-def test_synthesize_builds_spanish_prompt_and_uses_chat_fn():
-    captured = {}
-
-    def fake_chat(prompt):
-        captured["prompt"] = prompt
-        return "SÍNTESIS"
-
-    out = synthesize(_run(), fake_chat)
-    assert out == "SÍNTESIS"
-    # Prompt must instruct Spanish output and include collected text.
-    assert "español" in captured["prompt"].lower()
-    assert "hello world" in captured["prompt"]
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_report.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.report'`
-
-- [ ] **Step 3: Write `src/curator/report.py`**
-
-```python
-import base64
-import json
-import os
-from dataclasses import asdict
-
-
-def _img_tag(path: str) -> str:
-    if not path or not os.path.exists(path):
-        return ""
-    with open(path, "rb") as fh:
-        data = base64.b64encode(fh.read()).decode("ascii")
-    return f'<img style="max-width:100%" src="data:image/png;base64,{data}"/>'
-
-
-def render_markdown(run) -> str:
-    lines = [f"# Twitter: {run.topic}", "", f"_{run.timestamp}_", "",
-             "## Resumen", "", run.summary_text, "", "## Publicaciones destacadas", ""]
-    for i, p in enumerate(run.posts, 1):
-        lines += [f"### {i}. {p.author_name} ({p.author_handle}) — {p.likes} likes",
-                  "", p.text, "", f"Enlace: {p.permalink}", ""]
-        if p.top_replies:
-            lines.append("**Respuestas destacadas:**")
-            for r in p.top_replies:
-                lines.append(f"- ({r.likes} likes) {r.author_handle}: {r.text}")
-            lines.append("")
-    return "\n".join(lines)
-
-
-def render_html(run) -> str:
-    parts = [f"<!doctype html><html lang='es'><head><meta charset='utf-8'>",
-             f"<title>Twitter: {run.topic}</title></head><body>",
-             f"<h1>Twitter: {run.topic}</h1><p><em>{run.timestamp}</em></p>",
-             "<h2>Resumen</h2>", f"<p>{run.summary_text}</p>",
-             "<h2>Publicaciones destacadas</h2>"]
-    for i, p in enumerate(run.posts, 1):
-        parts.append(f"<h3>{i}. {p.author_name} ({p.author_handle}) — {p.likes} likes</h3>")
-        parts.append(f"<p>{p.text}</p>")
-        parts.append(_img_tag(p.screenshot_path))
-        for img in p.image_screenshot_paths:
-            parts.append(_img_tag(img))
-        parts.append(f"<p>Enlace: <a href='{p.permalink}'>{p.permalink}</a></p>")
-        if p.top_replies:
-            parts.append("<h4>Respuestas destacadas</h4><ul>")
-            for r in p.top_replies:
-                parts.append(f"<li>({r.likes} likes) {r.author_handle}: {r.text} "
-                             f"{_img_tag(r.screenshot_path)}</li>")
-            parts.append("</ul>")
-    parts.append("</body></html>")
-    return "".join(parts)
-
-
-def synthesize(run, chat_fn) -> str:
-    blocks = []
-    for p in run.posts:
-        blocks.append(f"[{p.likes} likes] {p.author_handle}: {p.text}")
-        for r in p.top_replies:
-            blocks.append(f"  respuesta [{r.likes} likes] {r.author_handle}: {r.text}")
-    collected = "\n".join(blocks)
-    prompt = (
-        "Eres un analista de redes sociales. A partir de las publicaciones y "
-        "respuestas más populares de Twitter/X sobre el tema "
-        f"'{run.topic}', escribe en ESPAÑOL un resumen narrativo claro de todo "
-        "lo más destacado que se está comentando: los temas principales, los "
-        "puntos de vista y el tono general. No inventes datos.\n\n"
-        f"Contenido recopilado:\n{collected}\n"
-    )
-    return chat_fn(prompt)
-
-
-def write_outputs(run, base_dir: str) -> None:
-    os.makedirs(base_dir, exist_ok=True)
-    with open(os.path.join(base_dir, "report.md"), "w", encoding="utf-8") as fh:
-        fh.write(render_markdown(run))
-    with open(os.path.join(base_dir, "report.html"), "w", encoding="utf-8") as fh:
-        fh.write(render_html(run))
-    with open(os.path.join(base_dir, "run.json"), "w", encoding="utf-8") as fh:
-        json.dump(asdict(run), fh, ensure_ascii=False, indent=2)
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_report.py -v`
-Expected: PASS (3 passed)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add -A
-git commit -m "feat: Spanish report synthesis and Markdown/HTML/JSON rendering"
-```
-
----
-
-### Task 6: Vision perception (`vision`)
-
-**Files:**
-- Create: `src/curator/vision.py`
-- Create: `tests/fixtures/README.md` (explains how to add screenshot fixtures)
-- Test: `tests/test_vision.py`
-
-**Interfaces:**
-- Consumes: `counts.parse_count`, `models.Element`, `models.ScreenModel`, `config.Config`.
-- Produces:
-  - `vision.ocr_words(image) -> list[dict]` — wraps `pytesseract.image_to_data`; each dict has `text`, `conf`, `left`, `top`, `width`, `height`. (Thin wrapper; the underlying pytesseract call is injected as `ocr_fn` for testing.)
-  - `vision.build_screen_model(vision_json: dict, ocr_words: list[dict]) -> ScreenModel` — pure function combining the vision model's element boxes (JSON) with OCR words falling inside each box; parses engagement numbers via `parse_count`.
-  - `vision.read_screen(image, cfg, vision_fn, ocr_fn) -> ScreenModel` — orchestrator; `vision_fn(image) -> dict` calls qwen2.5vl via Ollama, `ocr_fn(image) -> list[dict]` calls Tesseract. Both injected.
-  - `vision.capture(bounds) -> PIL.Image` — screenshot via `mss`.
-- **Test only the pure function `build_screen_model`** against a hand-written `vision_json` + `ocr_words`. The Ollama/Tesseract/mss calls are validated manually.
-
-- [ ] **Step 1: Write the failing test** `tests/test_vision.py`
-
-```python
-from curator.vision import build_screen_model
-
-
-def test_build_screen_model_assigns_ocr_and_parses_counts():
-    vision_json = {
-        "elements": [
-            {"kind": "post", "bbox": [0, 0, 200, 100]},
-            {"kind": "button", "bbox": [500, 500, 40, 20]},
-        ]
-    }
-    ocr_words = [
-        {"text": "hello", "conf": 95, "left": 10, "top": 10, "width": 40, "height": 12},
-        {"text": "12.4K", "conf": 90, "left": 10, "top": 60, "width": 40, "height": 12},
-        {"text": "offscreen", "conf": 88, "left": 900, "top": 900, "width": 40, "height": 12},
-    ]
-    sm = build_screen_model(vision_json, ocr_words)
-    post = sm.elements[0]
-    assert "hello" in post.text
-    # The "12.4K" inside the post box becomes a candidate like-count.
-    assert post.numbers["likes"][0] == 12400
-    # A word outside every box is not attached.
-    assert "offscreen" not in post.text
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_vision.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.vision'`
-
-- [ ] **Step 3: Write `src/curator/vision.py`**
-
-```python
-import json
-import mss
-from PIL import Image
-from curator.counts import parse_count
-from curator.models import Element, ScreenModel
-
-
-def _inside(word, box) -> bool:
-    x, y, w, h = box
-    cx = word["left"] + word["width"] / 2
-    cy = word["top"] + word["height"] / 2
-    return x <= cx <= x + w and y <= cy <= y + h
-
-
-def build_screen_model(vision_json: dict, ocr_words: list) -> ScreenModel:
-    """Pure: merge vision element boxes with OCR words + parse counts."""
-    elements = []
-    for el in vision_json.get("elements", []):
-        box = tuple(el["bbox"])
-        words = [w for w in ocr_words if _inside(w, box)]
-        text = " ".join(w["text"] for w in words).strip()
-        numbers = {}
-        # Highest number inside the box is treated as the like-count candidate.
-        best = (None, 0.0)
-        for w in words:
-            value, conf = parse_count(w["text"])
-            if value is not None and (best[0] is None or value > best[0]):
-                best = (value, conf)
-        if best[0] is not None:
-            numbers["likes"] = best
-        elements.append(Element(kind=el["kind"], bbox=box, text=text, numbers=numbers))
-    return ScreenModel(elements=elements)
-
-
-def ocr_words(image) -> list:
-    import pytesseract
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-    out = []
-    for i, txt in enumerate(data["text"]):
-        if txt.strip():
-            out.append({"text": txt, "conf": data["conf"][i],
-                        "left": data["left"][i], "top": data["top"][i],
-                        "width": data["width"][i], "height": data["height"][i]})
-    return out
-
-
-def _default_vision_fn(image, model: str):
-    import base64, io, ollama
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-    prompt = (
-        "Return ONLY JSON: {\"elements\":[{\"kind\":\"post|reply|button|image\","
-        "\"bbox\":[x,y,w,h]}]} for every tweet, reply, like-button and image "
-        "visible in this Twitter/X screenshot. Coordinates in pixels."
-    )
-    resp = ollama.chat(model=model, messages=[
-        {"role": "user", "content": prompt, "images": [b64]}])
-    content = resp["message"]["content"]
-    start, end = content.find("{"), content.rfind("}")
-    return json.loads(content[start:end + 1])
-
-
-def read_screen(image, cfg, vision_fn=None, ocr_fn=None) -> ScreenModel:
-    vision_fn = vision_fn or (lambda img: _default_vision_fn(img, cfg.vision_model))
-    ocr_fn = ocr_fn or ocr_words
-    return build_screen_model(vision_fn(image), ocr_fn(image))
-
-
-def capture(bounds) -> Image.Image:
-    """bounds = (left, top, width, height). Returns a PIL RGB image."""
-    left, top, width, height = bounds
-    with mss.mss() as sct:
-        shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
-        return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_vision.py -v`
-Expected: PASS (1 passed)
-
-- [ ] **Step 5: Write `tests/fixtures/README.md`**
-
-```markdown
-# Vision fixtures
-To add a regression test: save a real X screenshot here as `<name>.png`, and a
-hand-checked `<name>.expected.json` describing the elements you expect
-`build_screen_model` to produce. Keep images small and free of private data.
-```
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add -A
-git commit -m "feat: pure-vision perception (screen model, OCR, qwen2.5vl)"
-```
-
----
-
-### Task 7: Browser lifecycle & OS navigation (`browser`)
-
-**Files:**
-- Create: `src/curator/browser.py`
-- Test: `tests/test_browser.py`
-
-**Interfaces:**
-- Consumes: `config.Config`.
-- Produces a `Browser` class:
-  - `Browser(cfg)` — stores config.
-  - `search_url(topic: str) -> str` — builds the X Top-tab search URL (pure; **this is the unit-tested part**).
-  - `launch()` — starts plain Chrome via `subprocess` with `--user-data-dir` + window geometry flags.
-  - `goto(url)` — focus address bar (`Ctrl+L`), type URL, Enter (via `pyautogui`).
-  - `read_current_url() -> str` — `Ctrl+L`, `Ctrl+C`, read clipboard.
-  - `ensure_logged_in()` — prints instructions and blocks until the user presses Enter after logging in manually.
-  - `window_bounds() -> tuple` — locate the Chrome window via `pygetwindow`.
-- Only `search_url` is unit-tested; the rest is manual.
-
-- [ ] **Step 1: Write the failing test** `tests/test_browser.py`
-
-```python
-from curator.config import Config
-from curator.browser import Browser
-
-
-def test_search_url_uses_top_tab_and_encodes_topic():
-    b = Browser(Config.default())
-    url = b.search_url("mars rover")
-    assert url.startswith("https://x.com/search?")
-    assert "q=mars%20rover" in url or "q=mars+rover" in url
-    assert "f=top" in url
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_browser.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.browser'`
-
-- [ ] **Step 3: Write `src/curator/browser.py`**
-
-```python
-import shutil
-import subprocess
-import time
-import urllib.parse
-
-
-class Browser:
-    def __init__(self, cfg):
-        self.cfg = cfg
-        self.proc = None
-
-    def search_url(self, topic: str) -> str:
-        q = urllib.parse.quote(topic)
-        return f"https://x.com/search?q={q}&f=top"
-
-    def _chrome_path(self) -> str:
-        for name in ("chrome", "google-chrome", "chrome.exe"):
-            found = shutil.which(name)
-            if found:
-                return found
-        # Common Windows install location fallback.
-        return r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-
-    def launch(self):
-        c = self.cfg
-        args = [self._chrome_path(),
-                f"--user-data-dir={c.chrome_profile_dir}",
-                f"--window-position={c.window_left},{c.window_top}",
-                f"--window-size={c.window_width},{c.window_height}",
-                "--new-window", "https://x.com/home"]
-        self.proc = subprocess.Popen(args)
-        time.sleep(6)
-
-    def goto(self, url: str):
-        import pyautogui
-        pyautogui.hotkey("ctrl", "l")
-        time.sleep(0.5)
-        pyautogui.typewrite(url, interval=0.02)
-        pyautogui.press("enter")
-        time.sleep(4)
-
-    def read_current_url(self) -> str:
-        import pyautogui, subprocess as sp
-        pyautogui.hotkey("ctrl", "l")
-        time.sleep(0.3)
-        pyautogui.hotkey("ctrl", "c")
-        time.sleep(0.3)
-        # Windows clipboard via PowerShell to avoid extra deps.
-        out = sp.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
-                     capture_output=True, text=True)
-        pyautogui.press("escape")
-        return out.stdout.strip()
-
-    def ensure_logged_in(self):
-        print("Log in to your throwaway X account in the opened Chrome window.")
-        input("Press Enter here once you are logged in and see your home feed...")
-
-    def window_bounds(self):
-        import pygetwindow as gw
-        wins = [w for w in gw.getAllWindows() if "Chrome" in w.title]
-        if not wins:
-            c = self.cfg
-            return (c.window_left, c.window_top, c.window_width, c.window_height)
-        w = wins[0]
-        return (w.left, w.top, w.width, w.height)
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_browser.py -v`
-Expected: PASS (1 passed)
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add -A
-git commit -m "feat: plain-Chrome launch and OS-input navigation"
-```
-
----
-
-### Task 8: Human-behavior actions (`humanize` actions)
+### Task 5: Human input actions (`humanize`)
 
 **Files:**
 - Create: `src/curator/humanize.py`
 - Test: `tests/test_humanize.py`
 
 **Interfaces:**
-- Consumes: `humanize_math`, `config.Config`, `models.ScreenModel`.
+- Consumes: `humanize_math`, `config.Config`.
 - Produces a `Human` class:
   - `Human(cfg, rng=None)`.
-  - `move_and_click(x, y)` — walk the Bézier path with `pyautogui.moveTo`, then click.
+  - `pause()` / `dwell(text)` — sleep human delays.
+  - `move_and_click(x, y)` — Bézier `pyautogui.moveTo` walk, then click.
   - `scroll(clicks)` — several small `pyautogui.scroll` steps with jittered pauses.
-  - `pause()` — `time.sleep(jittered_delay(...))`.
-  - `dwell(text)` — sleep `dwell_seconds(text)`.
-  - `spend_action() -> bool` / `budget_remaining() -> int` — decrement/report the action budget.
-  - `check_circuit_breaker(sm: ScreenModel) -> bool` — returns True if any element text matches a stop phrase (`"unusual activity"`, `"rate limit"`, `"log in"`, `"try again later"`, case-insensitive). **This is the unit-tested part.**
+  - `spend_action() -> bool` / `budget_remaining() -> int` — action budget. **This is the unit-tested part.**
 
 - [ ] **Step 1: Write the failing test** `tests/test_humanize.py`
 
 ```python
 from curator.config import Config
-from curator.models import Element, ScreenModel
 from curator.humanize import Human
 
 
@@ -999,26 +294,12 @@ def test_budget_decrements_and_blocks():
     assert h.spend_action() is True
     assert h.spend_action() is False
     assert h.budget_remaining() == 0
-
-
-def test_circuit_breaker_trips_on_stop_phrase():
-    h = Human(Config.default())
-    sm = ScreenModel(elements=[Element(kind="button", bbox=(0, 0, 1, 1),
-                                       text="Caution: unusual activity detected")])
-    assert h.check_circuit_breaker(sm) is True
-
-
-def test_circuit_breaker_ok_on_normal_screen():
-    h = Human(Config.default())
-    sm = ScreenModel(elements=[Element(kind="post", bbox=(0, 0, 1, 1),
-                                       text="just a normal tweet")])
-    assert h.check_circuit_breaker(sm) is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_humanize.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.humanize'`
+Run: `python -m pytest tests/test_humanize.py -v`
+Expected: FAIL with `ModuleNotFoundError`.
 
 - [ ] **Step 3: Write `src/curator/humanize.py`**
 
@@ -1026,10 +307,6 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'curator.humanize'`
 import random
 import time
 from curator.humanize_math import bezier_path, jittered_delay, dwell_seconds
-
-_STOP_PHRASES = ("unusual activity", "rate limit", "rate-limited",
-                 "try again later", "log in", "sign in to continue",
-                 "something went wrong")
 
 
 class Human:
@@ -1069,227 +346,641 @@ class Human:
 
     def budget_remaining(self) -> int:
         return self._budget
-
-    def check_circuit_breaker(self, sm) -> bool:
-        blob = " ".join(e.text for e in sm.elements).lower()
-        return any(phrase in blob for phrase in _STOP_PHRASES)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_humanize.py -v`
+Run: `python -m pytest tests/test_humanize.py -v`
+Expected: PASS (1 passed)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/curator/humanize.py tests/test_humanize.py
+git commit -m "feat: human input action layer (move/click, scroll, budget)"
+```
+
+---
+
+### Task 6: Browser lifecycle & OS navigation (`browser`)
+
+**Files:**
+- Create: `src/curator/browser.py`
+- Test: `tests/test_browser.py`
+
+**Interfaces:**
+- Consumes: `config.Config`.
+- Produces a `Browser` class:
+  - `Browser(cfg)`.
+  - `search_url(topic) -> str` — X Top-tab search URL (**unit-tested**).
+  - `launch()` — plain Chrome via `subprocess` with `--user-data-dir` + geometry.
+  - `focus()` — activate the Chrome window (`pygetwindow`).
+  - `goto(url)` — focus, then `Ctrl+L`, type, Enter.
+  - `read_current_url() -> str` — `Ctrl+L`, `Ctrl+C`, read clipboard (PowerShell `Get-Clipboard`).
+  - `ensure_logged_in()` — print instructions; block on `input()`.
+  - `window_bounds() -> tuple` — Chrome window bounds or config geometry.
+
+- [ ] **Step 1: Write the failing test** `tests/test_browser.py`
+
+```python
+from curator.config import Config
+from curator.browser import Browser
+
+
+def test_search_url_top_tab_and_encoding():
+    b = Browser(Config.default())
+    url = b.search_url("mars rover")
+    assert url.startswith("https://x.com/search?")
+    assert "q=mars%20rover" in url or "q=mars+rover" in url
+    assert "f=top" in url
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_browser.py -v`
+Expected: FAIL with `ModuleNotFoundError`.
+
+- [ ] **Step 3: Write `src/curator/browser.py`**
+
+```python
+import shutil
+import subprocess
+import time
+import urllib.parse
+
+
+class Browser:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.proc = None
+
+    def search_url(self, topic: str) -> str:
+        q = urllib.parse.quote(topic)
+        return f"https://x.com/search?q={q}&f=top"
+
+    def _chrome_path(self) -> str:
+        for name in ("chrome", "google-chrome", "chrome.exe"):
+            found = shutil.which(name)
+            if found:
+                return found
+        return r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+    def launch(self):
+        c = self.cfg
+        args = [self._chrome_path(),
+                f"--user-data-dir={c.chrome_profile_dir}",
+                f"--window-position={c.window_left},{c.window_top}",
+                f"--window-size={c.window_width},{c.window_height}",
+                "--new-window", "https://x.com/home"]
+        self.proc = subprocess.Popen(args)
+        time.sleep(6)
+
+    def focus(self):
+        import pygetwindow as gw
+        wins = [w for w in gw.getAllWindows() if "Chrome" in w.title]
+        if wins:
+            try:
+                wins[0].activate()
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    def goto(self, url: str):
+        import pyautogui
+        self.focus()
+        pyautogui.hotkey("ctrl", "l")
+        time.sleep(0.5)
+        pyautogui.typewrite(url, interval=0.02)
+        pyautogui.press("enter")
+        time.sleep(4)
+
+    def read_current_url(self) -> str:
+        import pyautogui, subprocess as sp
+        self.focus()
+        pyautogui.hotkey("ctrl", "l")
+        time.sleep(0.3)
+        pyautogui.hotkey("ctrl", "c")
+        time.sleep(0.3)
+        out = sp.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                     capture_output=True, text=True)
+        pyautogui.press("escape")
+        return out.stdout.strip()
+
+    def ensure_logged_in(self):
+        print("Log in to your throwaway X account in the opened Chrome window.")
+        input("Press Enter here once you are logged in and see your home feed...")
+
+    def window_bounds(self):
+        import pygetwindow as gw
+        wins = [w for w in gw.getAllWindows() if "Chrome" in w.title]
+        if not wins:
+            c = self.cfg
+            return (c.window_left, c.window_top, c.window_width, c.window_height)
+        w = wins[0]
+        return (w.left, w.top, w.width, w.height)
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python -m pytest tests/test_browser.py -v`
+Expected: PASS (1 passed)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/curator/browser.py tests/test_browser.py
+git commit -m "feat: plain-Chrome launch and OS-input navigation"
+```
+
+---
+
+### Task 7: Popularity ranking (`ranker`)
+
+**Files:**
+- Create: `src/curator/ranker.py`
+- Test: `tests/test_ranker.py`
+
+**Interfaces:**
+- Consumes: `models.Post`, `models.Reply`.
+- Produces:
+  - `top_posts(posts, n, min_confidence=0.4) -> list[Post]` — desc by likes; tie-break reposts then replies; drop `engagement_confidence < min_confidence` and `likes < 0`.
+  - `top_replies(replies, m, min_confidence=0.4) -> list[Reply]` — desc by likes; same drops.
+
+- [ ] **Step 1: Write the failing test** `tests/test_ranker.py`
+
+```python
+from curator.models import Post, Reply
+from curator.ranker import top_posts, top_replies
+
+
+def _post(likes, reposts=0, replies=0, conf=1.0):
+    return Post(author_handle="@a", author_name="A", text="t",
+                likes=likes, replies=replies, reposts=reposts,
+                engagement_confidence=conf)
+
+
+def test_orders_by_likes_desc():
+    assert [p.likes for p in top_posts([_post(10), _post(100), _post(50)], 2)] == [100, 50]
+
+
+def test_tie_breaks_by_reposts():
+    assert [p.reposts for p in top_posts([_post(10, reposts=1), _post(10, reposts=9)], 2)] == [9, 1]
+
+
+def test_drops_low_confidence():
+    assert [p.likes for p in top_posts([_post(100, conf=0.2), _post(5, conf=0.9)], 5)] == [5]
+
+
+def test_drops_unreadable_likes():
+    assert [p.likes for p in top_posts([_post(-1), _post(5)], 5)] == [5]
+
+
+def test_top_replies_orders_and_limits():
+    reps = [Reply("@a", "A", "t", likes=3), Reply("@b", "B", "t", likes=30),
+            Reply("@c", "C", "t", likes=15)]
+    assert [r.likes for r in top_replies(reps, 2)] == [30, 15]
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_ranker.py -v`
+Expected: FAIL with `ModuleNotFoundError`.
+
+- [ ] **Step 3: Write `src/curator/ranker.py`**
+
+```python
+from curator.models import Post, Reply
+
+
+def _eligible(likes, confidence, min_confidence) -> bool:
+    return likes is not None and likes >= 0 and confidence >= min_confidence
+
+
+def top_posts(posts, n, min_confidence=0.4):
+    e = [p for p in posts if _eligible(p.likes, p.engagement_confidence, min_confidence)]
+    e.sort(key=lambda p: (p.likes, p.reposts, p.replies), reverse=True)
+    return e[:n]
+
+
+def top_replies(replies, m, min_confidence=0.4):
+    e = [r for r in replies if _eligible(r.likes, r.engagement_confidence, min_confidence)]
+    e.sort(key=lambda r: r.likes, reverse=True)
+    return e[:m]
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python -m pytest tests/test_ranker.py -v`
+Expected: PASS (5 passed)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/curator/ranker.py tests/test_ranker.py
+git commit -m "feat: relative popularity ranking for posts and replies"
+```
+
+---
+
+### Task 8: Report rendering (`report`)
+
+**Files:**
+- Create: `src/curator/report.py`
+- Test: `tests/test_report.py`
+
+**Interfaces:**
+- Consumes: `models.Post`, `models.Reply`, `models.RunResult`.
+- Produces:
+  - `render_markdown(run) -> str`
+  - `render_html(run) -> str` (screenshots embedded as base64 when the file exists)
+  - `write_outputs(run, base_dir) -> None` — writes `report.md`, `report.html`, `run.json`.
+- NOTE: the Spanish `run.summary_text` is written by Claude and set before rendering; there is no `synthesize` function.
+
+- [ ] **Step 1: Write the failing test** `tests/test_report.py`
+
+```python
+from curator.models import Post, Reply, RunResult
+from curator.report import render_markdown, render_html, write_outputs
+
+
+def _run():
+    reply = Reply("@r", "R", "great point", likes=42)
+    post = Post("@a", "Alice", "hello world", likes=100, replies=3, reposts=5,
+                permalink="https://x.com/a/status/1", top_replies=[reply])
+    return RunResult(topic="mars", timestamp="2026-07-22", posts=[post],
+                     summary_text="Resumen en español.")
+
+
+def test_markdown_includes_topic_post_reply_summary():
+    md = render_markdown(_run())
+    for s in ("mars", "hello world", "great point",
+              "https://x.com/a/status/1", "Resumen en español."):
+        assert s in md
+
+
+def test_html_is_document():
+    html = render_html(_run())
+    assert "<html" in html.lower()
+    assert "hello world" in html
+    assert "Resumen en español." in html
+
+
+def test_write_outputs(tmp_path):
+    write_outputs(_run(), str(tmp_path))
+    assert (tmp_path / "report.md").exists()
+    assert (tmp_path / "report.html").exists()
+    assert (tmp_path / "run.json").exists()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python -m pytest tests/test_report.py -v`
+Expected: FAIL with `ModuleNotFoundError`.
+
+- [ ] **Step 3: Write `src/curator/report.py`**
+
+```python
+import base64
+import json
+import os
+from dataclasses import asdict
+
+
+def _img_tag(path: str) -> str:
+    if not path or not os.path.exists(path):
+        return ""
+    with open(path, "rb") as fh:
+        data = base64.b64encode(fh.read()).decode("ascii")
+    return f'<img style="max-width:100%" src="data:image/png;base64,{data}"/>'
+
+
+def render_markdown(run) -> str:
+    lines = [f"# Twitter: {run.topic}", "", f"_{run.timestamp}_", "",
+             "## Resumen", "", run.summary_text, "",
+             "## Publicaciones destacadas", ""]
+    for i, p in enumerate(run.posts, 1):
+        lines += [f"### {i}. {p.author_name} ({p.author_handle}) — {p.likes} likes",
+                  "", p.text, "", f"Enlace: {p.permalink}", ""]
+        if p.top_replies:
+            lines.append("**Respuestas destacadas:**")
+            for r in p.top_replies:
+                lines.append(f"- ({r.likes} likes) {r.author_handle}: {r.text}")
+            lines.append("")
+    return "\n".join(lines)
+
+
+def render_html(run) -> str:
+    parts = ["<!doctype html><html lang='es'><head><meta charset='utf-8'>",
+             f"<title>Twitter: {run.topic}</title></head><body>",
+             f"<h1>Twitter: {run.topic}</h1><p><em>{run.timestamp}</em></p>",
+             "<h2>Resumen</h2>", f"<p>{run.summary_text}</p>",
+             "<h2>Publicaciones destacadas</h2>"]
+    for i, p in enumerate(run.posts, 1):
+        parts.append(f"<h3>{i}. {p.author_name} ({p.author_handle}) — {p.likes} likes</h3>")
+        parts.append(f"<p>{p.text}</p>")
+        parts.append(_img_tag(p.screenshot_path))
+        for img in p.image_screenshot_paths:
+            parts.append(_img_tag(img))
+        parts.append(f"<p>Enlace: <a href='{p.permalink}'>{p.permalink}</a></p>")
+        if p.top_replies:
+            parts.append("<h4>Respuestas destacadas</h4><ul>")
+            for r in p.top_replies:
+                parts.append(f"<li>({r.likes} likes) {r.author_handle}: {r.text} "
+                             f"{_img_tag(r.screenshot_path)}</li>")
+            parts.append("</ul>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def write_outputs(run, base_dir: str) -> None:
+    os.makedirs(base_dir, exist_ok=True)
+    with open(os.path.join(base_dir, "report.md"), "w", encoding="utf-8") as fh:
+        fh.write(render_markdown(run))
+    with open(os.path.join(base_dir, "report.html"), "w", encoding="utf-8") as fh:
+        fh.write(render_html(run))
+    with open(os.path.join(base_dir, "run.json"), "w", encoding="utf-8") as fh:
+        json.dump(asdict(run), fh, ensure_ascii=False, indent=2)
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `python -m pytest tests/test_report.py -v`
 Expected: PASS (3 passed)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A
-git commit -m "feat: human-behavior action layer with circuit-breaker"
+git add src/curator/report.py tests/test_report.py
+git commit -m "feat: Markdown/HTML/JSON report rendering"
 ```
 
 ---
 
-### Task 9: Orchestration (`agent`) and CLI (`main`)
+### Task 9: CLI toolkit (`cli`)
 
 **Files:**
-- Create: `src/curator/screenshots.py`
-- Create: `src/curator/agent.py`
-- Create: `src/curator/main.py`
-- Test: `tests/test_agent.py`
+- Create: `src/curator/cli.py`
+- Test: `tests/test_cli.py`
 
 **Interfaces:**
-- Consumes: everything above.
+- Consumes: all modules above.
 - Produces:
-  - `screenshots.crop_and_save(image, bbox, path) -> str` — crop a PIL image to bbox and save PNG (**unit-tested**).
-  - `agent.collect_posts_from_screen(sm: ScreenModel) -> list[Post]` — convert post-kind elements to `Post` records using their parsed `likes` (**unit-tested**).
-  - `agent.Agent(cfg, browser, human, ...)` with `run(topic) -> RunResult` — the perceive→decide→act loop (manual/integration).
-  - `main.main(argv)` — parse the topic arg, wire real dependencies, run, write outputs.
+  - `cli.build_parser() -> argparse.ArgumentParser` with subcommands: `launch`, `goto url`, `screenshot path`, `click x y`, `scroll clicks`, `read-url`, `crop img x y w h out`, `render-report records_json out_dir`.
+  - `cli.load_run(data: dict) -> RunResult` — rebuild `RunResult`/`Post`/`Reply` dataclasses from a plain dict (the JSON Claude writes).
+  - `cli.dispatch(args, deps) -> int` — run the chosen subcommand; `deps` is a dict of callables so tests can inject fakes. Real `main()` supplies real deps and calls `screenshots.set_dpi_aware()` first.
+- Both `load_run` and `dispatch` routing are **unit-tested** with fakes; real device commands are validated live.
 
-- [ ] **Step 1: Write the failing test** `tests/test_agent.py`
+- [ ] **Step 1: Write the failing test** `tests/test_cli.py`
 
 ```python
-from PIL import Image
-from curator.models import Element, ScreenModel
-from curator.screenshots import crop_and_save
-from curator.agent import collect_posts_from_screen
+import json
+from curator.cli import build_parser, load_run, dispatch
 
 
-def test_crop_and_save(tmp_path):
-    img = Image.new("RGB", (200, 200), "white")
-    out = crop_and_save(img, (10, 10, 50, 40), str(tmp_path / "c.png"))
-    saved = Image.open(out)
-    assert saved.size == (50, 40)
+def test_load_run_rebuilds_dataclasses():
+    data = {"topic": "t", "timestamp": "2026-07-22", "summary_text": "s",
+            "output_dir": "o",
+            "posts": [{"author_handle": "@a", "author_name": "A", "text": "x",
+                       "likes": 5, "replies": 0, "reposts": 0,
+                       "top_replies": [{"author_handle": "@b", "author_name": "B",
+                                        "text": "y", "likes": 1}]}]}
+    run = load_run(data)
+    assert run.topic == "t"
+    assert run.posts[0].likes == 5
+    assert run.posts[0].top_replies[0].author_handle == "@b"
 
 
-def test_collect_posts_from_screen_builds_posts_with_likes():
-    sm = ScreenModel(elements=[
-        Element(kind="post", bbox=(0, 0, 100, 80), text="alpha",
-                numbers={"likes": (500, 0.9)}),
-        Element(kind="button", bbox=(0, 90, 20, 20), text="Like"),
-    ])
-    posts = collect_posts_from_screen(sm)
-    assert len(posts) == 1
-    assert posts[0].likes == 500
-    assert posts[0].engagement_confidence == 0.9
-    assert posts[0].text == "alpha"
+def test_dispatch_routes_crop_to_dep():
+    calls = {}
+    deps = {"crop_and_save": lambda img, bbox, out: calls.setdefault("crop", (img, bbox, out))}
+    parser = build_parser()
+    args = parser.parse_args(["crop", "in.png", "1", "2", "3", "4", "out.png"])
+    rc = dispatch(args, deps)
+    assert rc == 0
+    assert calls["crop"] == ("in.png", (1, 2, 3, 4), "out.png")
+
+
+def test_dispatch_routes_render_report(tmp_path):
+    data = {"topic": "t", "timestamp": "d", "summary_text": "s", "output_dir": "",
+            "posts": []}
+    p = tmp_path / "rec.json"
+    p.write_text(json.dumps(data), encoding="utf-8")
+    written = {}
+    deps = {"write_outputs": lambda run, out: written.setdefault("w", (run.topic, out))}
+    args = build_parser().parse_args(["render-report", str(p), str(tmp_path / "out")])
+    rc = dispatch(args, deps)
+    assert rc == 0
+    assert written["w"][0] == "t"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_agent.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'curator.screenshots'`
+Run: `python -m pytest tests/test_cli.py -v`
+Expected: FAIL with `ModuleNotFoundError`.
 
-- [ ] **Step 3: Write `src/curator/screenshots.py`**
-
-```python
-import os
-
-
-def crop_and_save(image, bbox, path: str) -> str:
-    x, y, w, h = bbox
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    image.crop((x, y, x + w, y + h)).save(path)
-    return path
-```
-
-- [ ] **Step 4: Write `src/curator/agent.py`**
+- [ ] **Step 3: Write `src/curator/cli.py`**
 
 ```python
-import time
-from curator.models import Post, RunResult
-from curator.ranker import top_posts, top_replies
-from curator import vision, screenshots
-
-
-def collect_posts_from_screen(sm) -> list:
-    posts = []
-    for el in sm.elements:
-        if el.kind != "post":
-            continue
-        likes, conf = el.numbers.get("likes", (-1, 0.0))
-        posts.append(Post(author_handle="", author_name="", text=el.text,
-                          likes=likes if likes is not None else -1,
-                          replies=0, reposts=0, engagement_confidence=conf))
-    return posts
-
-
-class Agent:
-    def __init__(self, cfg, browser, human, out_dir, timestamp,
-                 read_screen=None, synth_fn=None):
-        self.cfg = cfg
-        self.browser = browser
-        self.human = human
-        self.out_dir = out_dir
-        self.timestamp = timestamp
-        self.read_screen = read_screen or (lambda img: vision.read_screen(img, cfg))
-        self.synth_fn = synth_fn
-
-    def _perceive(self):
-        bounds = self.browser.window_bounds()
-        img = vision.capture(bounds)
-        sm = self.read_screen(img)
-        return img, sm
-
-    def run(self, topic) -> RunResult:
-        from curator.report import synthesize, write_outputs
-        self.browser.launch()
-        self.browser.ensure_logged_in()
-        self.browser.goto(self.browser.search_url(topic))
-        self.human.pause()
-
-        collected = []
-        seen = set()
-        # Gather posts by scrolling the search results.
-        for _ in range(self.cfg.max_posts):
-            if not self.human.spend_action():
-                break
-            img, sm = self._perceive()
-            if self.human.check_circuit_breaker(sm):
-                break
-            for p in collect_posts_from_screen(sm):
-                key = p.text[:60]
-                if key and key not in seen:
-                    seen.add(key)
-                    collected.append(p)
-            self.human.scroll(3)
-            self.human.pause()
-
-        ranked = top_posts(collected, self.cfg.max_posts, self.cfg.min_confidence)
-        run = RunResult(topic=topic, timestamp=self.timestamp, posts=ranked,
-                        output_dir=self.out_dir)
-        # Incremental save before the (optional) summary.
-        write_outputs(run, self.out_dir)
-
-        if self.synth_fn:
-            run.summary_text = synthesize(run, self.synth_fn)
-            write_outputs(run, self.out_dir)
-        return run
-```
-
-- [ ] **Step 5: Write `src/curator/main.py`**
-
-```python
+import argparse
+import json
 import sys
-import time
-import os
 from curator.config import Config
-from curator.browser import Browser
-from curator.humanize import Human
-from curator.agent import Agent
+from curator.models import Post, Reply, RunResult
 
 
-def _ollama_chat(model):
-    import ollama
-    def chat(prompt):
-        resp = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
-        return resp["message"]["content"]
-    return chat
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="curator")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("launch")
+    g = sub.add_parser("goto"); g.add_argument("url")
+    s = sub.add_parser("screenshot"); s.add_argument("path")
+    c = sub.add_parser("click"); c.add_argument("x", type=int); c.add_argument("y", type=int)
+    sc = sub.add_parser("scroll"); sc.add_argument("clicks", type=int)
+    sub.add_parser("read-url")
+    cr = sub.add_parser("crop")
+    cr.add_argument("img"); cr.add_argument("x", type=int); cr.add_argument("y", type=int)
+    cr.add_argument("w", type=int); cr.add_argument("h", type=int); cr.add_argument("out")
+    rr = sub.add_parser("render-report")
+    rr.add_argument("records_json"); rr.add_argument("out_dir")
+    return p
 
 
-def main(argv=None):
-    argv = argv if argv is not None else sys.argv[1:]
-    if not argv:
-        print('Usage: python -m curator.main "topic"')
-        return 1
-    topic = argv[0]
+def load_run(data: dict) -> RunResult:
+    posts = []
+    for pd in data.get("posts", []):
+        replies = [Reply(**rd) for rd in pd.get("top_replies", [])]
+        fields = {k: v for k, v in pd.items() if k != "top_replies"}
+        posts.append(Post(top_replies=replies, **fields))
+    return RunResult(topic=data["topic"], timestamp=data["timestamp"],
+                     posts=posts, summary_text=data.get("summary_text", ""),
+                     output_dir=data.get("output_dir", ""))
+
+
+def dispatch(args, deps) -> int:
+    cmd = args.cmd
+    if cmd == "launch":
+        deps["launch"](); return 0
+    if cmd == "goto":
+        deps["goto"](args.url); return 0
+    if cmd == "screenshot":
+        deps["capture_screen"](args.path); return 0
+    if cmd == "click":
+        deps["move_and_click"](args.x, args.y); return 0
+    if cmd == "scroll":
+        deps["scroll"](args.clicks); return 0
+    if cmd == "read-url":
+        print(deps["read_current_url"]()); return 0
+    if cmd == "crop":
+        deps["crop_and_save"](args.img, (args.x, args.y, args.w, args.h), args.out)
+        return 0
+    if cmd == "render-report":
+        with open(args.records_json, encoding="utf-8") as fh:
+            run = load_run(json.load(fh))
+        deps["write_outputs"](run, args.out_dir); return 0
+    return 1
+
+
+def _real_deps():
+    from curator import screenshots, report
+    from curator.browser import Browser
+    from curator.humanize import Human
     cfg = Config.default()
-    stamp = time.strftime("%Y-%m-%d")
-    safe = "".join(ch for ch in topic if ch.isalnum() or ch in " -_").strip().replace(" ", "-")
-    out_dir = os.path.join(cfg.output_dir, f"{safe}-{stamp}")
     browser = Browser(cfg)
     human = Human(cfg)
-    agent = Agent(cfg, browser, human, out_dir, stamp,
-                  synth_fn=_ollama_chat(cfg.text_model))
-    agent.run(topic)
-    print(f"Done. Output in {out_dir}")
-    return 0
+    return {
+        "launch": browser.launch,
+        "goto": browser.goto,
+        "read_current_url": browser.read_current_url,
+        "capture_screen": screenshots.capture_screen,
+        "crop_and_save": screenshots.crop_and_save,
+        "move_and_click": human.move_and_click,
+        "scroll": human.scroll,
+        "write_outputs": report.write_outputs,
+    }
+
+
+def main(argv=None) -> int:
+    from curator import screenshots
+    screenshots.set_dpi_aware()
+    args = build_parser().parse_args(argv if argv is not None else sys.argv[1:])
+    return dispatch(args, _real_deps())
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_agent.py -v`
-Expected: PASS (2 passed)
+Run: `python -m pytest tests/test_cli.py -v`
+Expected: PASS (3 passed)
 
-- [ ] **Step 7: Run the full suite**
+- [ ] **Step 5: Run the full suite**
 
-Run: `pytest -v`
-Expected: PASS (all tests from Tasks 1–9)
+Run: `python -m pytest -v`
+Expected: PASS (all tests from Tasks 1–9).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add -A
-git commit -m "feat: agent orchestration loop and CLI entrypoint"
+git add src/curator/cli.py tests/test_cli.py
+git commit -m "feat: CLI toolkit wiring launch/goto/screenshot/click/scroll/crop/render"
+```
+
+---
+
+### Task 10: Agent runbook and README
+
+**Files:**
+- Create: `docs/AGENT_RUNBOOK.md`
+- Modify: `README.md`
+
+No tests (documentation). Deliverable is the runbook Claude follows to drive a live run, plus updated setup/risk docs.
+
+- [ ] **Step 1: Write `docs/AGENT_RUNBOOK.md`**
+
+````markdown
+# Agent Runbook — how Claude drives a run
+
+Claude is the brain. The Python CLI (`python -m curator.cli ...`) is hands & eyes.
+All coordinates are full-screen pixels (process is DPI-aware). Pace like a human.
+
+## Preconditions
+- `pip install -r requirements.txt`; Chrome installed; throwaway X account ready.
+- Ideally set Windows display scaling to 100%.
+
+## Loop
+1. `python -m curator.cli launch` — opens Chrome on the dedicated profile.
+2. Tell the user to log in by hand; wait for confirmation.
+3. `python -m curator.cli goto "<search Top-tab URL for the topic>"`.
+   Build the URL with `Browser.search_url` semantics: `https://x.com/search?q=<enc>&f=top`.
+4. Repeat until enough candidate posts (aim ~15–18), pacing between steps:
+   a. `python -m curator.cli screenshot shots/feed-<n>.png`
+   b. Read the PNG. Record each visible post: author, text, like/reply/repost
+      counts, whether it has an image, and the on-screen bbox.
+   c. If a rate-limit / unusual-activity / login wall is visible → STOP, keep data.
+   d. `python -m curator.cli scroll 3`
+5. Rank candidates (or call ranker); pick top posts by likes.
+6. Per top post, pacing between steps:
+   a. `click` its location to open it; `screenshot`; `read-url` for the permalink.
+   b. Pick the tweet bbox and image bboxes; `crop` each into `shots/`.
+   c. Scroll replies, `screenshot`, record replies + like counts.
+   d. Rank replies; `crop` the top ones.
+   e. Append to `run.json` (incremental).
+7. Write the Spanish narrative `summary_text` yourself from the collected text.
+8. Save the final records JSON and run
+   `python -m curator.cli render-report <records.json> output/<topic>-<date>`.
+
+## Rules
+- Never rush: pause between actions; dwell on posts before moving on.
+- Never open more than the focused volume; stop at the action budget.
+- If unsure what's on screen, screenshot again rather than guessing a click.
+````
+
+- [ ] **Step 2: Overwrite `README.md`**
+
+```markdown
+# Twitter Vision Curator
+
+A local agent that a live Claude Code session drives to browse X/Twitter by
+vision only (screenshots) and real OS mouse/keyboard input, then writes a
+Spanish report of the most popular posts/replies on a topic.
+
+## WARNING
+Automating a logged-in account violates X's Terms of Service. Use a throwaway
+account you are willing to lose. This tool paces itself like a human to avoid
+being blocked; it does NOT and cannot guarantee you won't be detected or
+suspended. There is no fingerprint spoofing, proxy rotation, or CAPTCHA solving.
+
+## How it works
+- Python toolkit (`curator.cli`) = hands & eyes: launch Chrome, human
+  mouse/scroll, screenshot, crop, read URL, render report.
+- Claude Code = brain: looks at screenshots, decides human actions, writes the
+  Spanish report. See `docs/AGENT_RUNBOOK.md`.
+- No Twitter API, no local model, no DOM, no automation framework.
+
+## Setup
+1. Install Python 3.11+ and Google Chrome.
+2. `pip install -r requirements.txt`
+3. (Recommended) set Windows display scaling to 100%.
+4. Have a throwaway X account; you log in by hand on first launch.
+
+## Use
+Ask Claude Code to run a topic; it follows `docs/AGENT_RUNBOOK.md`, driving
+`python -m curator.cli ...` and looking at the screenshots.
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/AGENT_RUNBOOK.md README.md
+git commit -m "docs: agent runbook and README for Claude-driven engine"
 ```
 
 ---
 
 ## Notes for the implementer
-
-- Tasks 1–6 and 8–9's unit tests are fully offline and must pass in CI. Tasks 7 and the live parts of 6/8/9 (`launch`, `goto`, `read_screen` with real Ollama, `Agent.run` end-to-end) require Chrome + Ollama + Tesseract and a manual login, so they are validated by a human run, not pytest.
-- Reply collection per post mirrors post collection (open post → perceive → `collect` reply-kind elements → `top_replies` → screenshot). It is implemented inside `Agent.run` during the manual-integration phase; keep the same perceive/scroll/circuit-breaker pattern. This is intentionally left to the integration step because it cannot be unit-tested without the live site.
-- Keep the ToS/risk notice in `README.md` prominent.
+- Tasks 2–9 unit tests are fully offline and must pass. Live device commands
+  (`launch`, `goto`, `click`, `scroll`, real `screenshot`, `read-url`) and the
+  full Claude-driven loop are validated in a guided live run, not pytest.
+- Keep the ToS/risk notice prominent in `README.md`.
