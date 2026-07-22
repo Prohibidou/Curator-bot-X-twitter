@@ -29,3 +29,14 @@ def test_write_outputs(tmp_path):
     assert (tmp_path / "report.md").exists()
     assert (tmp_path / "report.html").exists()
     assert (tmp_path / "run.json").exists()
+
+
+def test_html_escapes_user_content():
+    post = Post("@a", "Alice", 'hello <b>& "world"</b>', likes=100, replies=3, reposts=5,
+                permalink="https://x.com/a/status/1")
+    run = RunResult(topic="mars", timestamp="2026-07-22", posts=[post],
+                    summary_text="A < B & C")
+    out = render_html(run)
+    assert "<b>" not in out
+    assert "&lt;b&gt;" in out
+    assert "&amp;" in out

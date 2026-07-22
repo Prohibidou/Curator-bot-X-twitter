@@ -19,6 +19,8 @@ def capture_screen(path: str) -> str:
     import mss
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with mss.mss() as sct:
+        # Assumes the primary monitor is at origin (0, 0), so screenshot pixel
+        # coordinates line up 1:1 with pyautogui screen coordinates.
         mon = sct.monitors[1]  # primary monitor
         shot = sct.grab(mon)
         img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")

@@ -31,5 +31,5 @@ All coordinates are full-screen pixels (process is DPI-aware). Pace like a human
 
 ## Rules
 - Never rush: pause between actions; dwell on posts before moving on.
-- Never open more than the focused volume; stop at the action budget.
+- Never open more than the focused volume. Claude (the brain) counts its own actions during the run and must stop once it reaches `Config.action_budget` — the Python toolkit does not track or enforce this itself.
 - If unsure what's on screen, screenshot again rather than guessing a click.

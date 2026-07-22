@@ -7,7 +7,6 @@ class Human:
     def __init__(self, cfg, rng=None):
         self.cfg = cfg
         self.rng = rng or random.Random()
-        self._budget = cfg.action_budget
 
     def pause(self):
         time.sleep(jittered_delay(self.cfg.min_delay_s, self.cfg.max_delay_s, self.rng))
@@ -31,12 +30,3 @@ class Human:
         for _ in range(abs(clicks)):
             pyautogui.scroll(step)
             time.sleep(jittered_delay(0.2, 0.8, self.rng))
-
-    def spend_action(self) -> bool:
-        if self._budget <= 0:
-            return False
-        self._budget -= 1
-        return True
-
-    def budget_remaining(self) -> int:
-        return self._budget
