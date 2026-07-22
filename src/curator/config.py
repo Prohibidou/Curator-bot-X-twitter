@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 class Config:
     max_posts: int = 18
     max_replies: int = 8
-    vision_model: str = "qwen2.5vl"
-    text_model: str = "qwen2.5:7b"
     output_dir: str = "output"
     action_budget: int = 300
     min_delay_s: float = 1.0
