@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import time
@@ -22,9 +23,18 @@ class Browser:
 
     def launch(self):
         c = self.cfg
+        # ABSOLUTE profile dir: with a relative --user-data-dir Chrome (whose CWD
+        # differs) hands off to any already-running Chrome instead of starting a
+        # separate instance with the debug port.
+        profile = os.path.abspath(c.chrome_profile_dir)
         args = [self._chrome_path(),
                 f"--remote-debugging-port={c.debug_port}",
-                f"--user-data-dir={c.chrome_profile_dir}",
+                # Chrome (v111+) rejects CDP WebSocket handshakes unless the
+                # connecting origin is explicitly allowed.
+                "--remote-allow-origins=*",
+                f"--user-data-dir={profile}",
+                "--no-first-run",
+                "--no-default-browser-check",
                 f"--window-size={c.window_width},{c.window_height}",
                 "https://x.com/home"]
         # NOTE: intentionally NO --enable-automation (keeps navigator.webdriver false).
