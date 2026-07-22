@@ -15,6 +15,7 @@ class Config:
     window_height: int = 1000
     chrome_profile_dir: str = "chrome-profile"
     min_confidence: float = 0.4
+    debug_port: int = 9222
 
     @classmethod
     def default(cls) -> "Config":
