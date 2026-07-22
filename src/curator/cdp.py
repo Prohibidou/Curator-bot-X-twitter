@@ -15,10 +15,14 @@ def select_target(targets, prefer):
 
 def discover_ws_url(port, prefer="x.com", opener=None):
     opener = opener or (lambda url: urllib.request.urlopen(url, timeout=5))
-    with opener(f"http://localhost:{port}/json") as r:
+    with opener(f"http://127.0.0.1:{port}/json") as r:
         targets = json.loads(r.read().decode("utf-8"))
     t = select_target(targets, prefer)
-    return t["webSocketDebuggerUrl"], t.get("url", "")
+    ws_url = t.get("webSocketDebuggerUrl")
+    if not ws_url:
+        raise RuntimeError("selected target has no webSocketDebuggerUrl (already has a devtools client?)")
+    ws_url = ws_url.replace("localhost", "127.0.0.1")
+    return ws_url, t.get("url", "")
 
 
 class CDP:
@@ -34,7 +38,7 @@ class CDP:
             msg = json.loads(self._ws.recv())
             if msg.get("id") == self._id:
                 if "error" in msg:
-                    raise RuntimeError(msg["error"])
+                    raise RuntimeError(f"{method} failed: {msg['error']}")
                 return msg.get("result", {})
             # otherwise it's an event or another id: keep reading
 
@@ -52,7 +56,8 @@ class CDP:
         self.move(x, y)
         for t in ("mousePressed", "mouseReleased"):
             self.send("Input.dispatchMouseEvent",
-                      {"type": t, "x": x, "y": y, "button": "left", "clickCount": 1})
+                      {"type": t, "x": x, "y": y, "button": "left", "clickCount": 1,
+                       "buttons": 1})
 
     def scroll(self, x, y, dy):
         self.send("Input.dispatchMouseEvent",
@@ -72,6 +77,18 @@ class CDP:
             return ""
         idx = res.get("currentIndex", len(entries) - 1)
         return entries[idx].get("url", "")
+
+    def close(self):
+        try:
+            self._ws.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
 
 def connect(port, cfg=None, prefer="x.com", ws_factory=None):

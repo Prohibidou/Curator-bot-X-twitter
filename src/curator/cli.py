@@ -33,20 +33,52 @@ def load_run(data: dict) -> RunResult:
                      output_dir=data.get("output_dir", ""))
 
 
+def _close_cdp(cdp):
+    close = getattr(cdp, "close", None)
+    if callable(close):
+        close()
+
+
 def dispatch(args, deps) -> int:
     cmd = args.cmd
     if cmd == "launch":
         deps["launch"](); return 0
     if cmd == "goto":
-        deps["connect"]().navigate(args.url); return 0
+        cdp = deps["connect"]()
+        try:
+            cdp.navigate(args.url)
+        finally:
+            _close_cdp(cdp)
+        return 0
     if cmd == "screenshot":
-        data = deps["connect"]().screenshot(); deps["save_png"](data, args.path); return 0
+        cdp = deps["connect"]()
+        try:
+            data = cdp.screenshot()
+            deps["save_png"](data, args.path)
+        finally:
+            _close_cdp(cdp)
+        return 0
     if cmd == "click":
-        deps["human"](deps["connect"]()).move_and_click(args.x, args.y); return 0
+        cdp = deps["connect"]()
+        try:
+            deps["human"](cdp).move_and_click(args.x, args.y)
+        finally:
+            _close_cdp(cdp)
+        return 0
     if cmd == "scroll":
-        deps["human"](deps["connect"]()).scroll(args.clicks); return 0
+        cdp = deps["connect"]()
+        try:
+            deps["human"](cdp).scroll(args.clicks)
+        finally:
+            _close_cdp(cdp)
+        return 0
     if cmd == "read-url":
-        print(deps["connect"]().current_url()); return 0
+        cdp = deps["connect"]()
+        try:
+            print(cdp.current_url())
+        finally:
+            _close_cdp(cdp)
+        return 0
     if cmd == "crop":
         deps["crop_and_save"](args.img, (args.x, args.y, args.w, args.h), args.out); return 0
     if cmd == "render-report":
