@@ -28,8 +28,8 @@ def load_run(data: dict) -> RunResult:
         replies = [Reply(**rd) for rd in pd.get("top_replies", [])]
         fields = {k: v for k, v in pd.items() if k != "top_replies"}
         posts.append(Post(top_replies=replies, **fields))
-    return RunResult(topic=data["topic"], timestamp=data["timestamp"],
-                     posts=posts, summary_text=data.get("summary_text", ""),
+    return RunResult(topic=data["topic"], timestamp=data["timestamp"], posts=posts,
+                     summary_text=data.get("summary_text", ""),
                      output_dir=data.get("output_dir", ""))
 
 
@@ -38,18 +38,17 @@ def dispatch(args, deps) -> int:
     if cmd == "launch":
         deps["launch"](); return 0
     if cmd == "goto":
-        deps["goto"](args.url); return 0
+        deps["connect"]().navigate(args.url); return 0
     if cmd == "screenshot":
-        deps["capture_screen"](args.path); return 0
+        data = deps["connect"]().screenshot(); deps["save_png"](data, args.path); return 0
     if cmd == "click":
-        deps["move_and_click"](args.x, args.y); return 0
+        deps["human"](deps["connect"]()).move_and_click(args.x, args.y); return 0
     if cmd == "scroll":
-        deps["scroll"](args.clicks); return 0
+        deps["human"](deps["connect"]()).scroll(args.clicks); return 0
     if cmd == "read-url":
-        print(deps["read_current_url"]()); return 0
+        print(deps["connect"]().current_url()); return 0
     if cmd == "crop":
-        deps["crop_and_save"](args.img, (args.x, args.y, args.w, args.h), args.out)
-        return 0
+        deps["crop_and_save"](args.img, (args.x, args.y, args.w, args.h), args.out); return 0
     if cmd == "render-report":
         with open(args.records_json, encoding="utf-8") as fh:
             run = load_run(json.load(fh))
@@ -58,27 +57,22 @@ def dispatch(args, deps) -> int:
 
 
 def _real_deps():
-    from curator import screenshots, report
+    from curator import cdp as cdp_mod, screenshots, report
     from curator.browser import Browser
     from curator.humanize import Human
     cfg = Config.default()
     browser = Browser(cfg)
-    human = Human(cfg)
     return {
         "launch": browser.launch,
-        "goto": browser.goto,
-        "read_current_url": browser.read_current_url,
-        "capture_screen": screenshots.capture_screen,
+        "connect": lambda: cdp_mod.connect(cfg.debug_port, cfg),
+        "human": lambda c: Human(c, cfg),
+        "save_png": screenshots.save_png,
         "crop_and_save": screenshots.crop_and_save,
-        "move_and_click": human.move_and_click,
-        "scroll": human.scroll,
         "write_outputs": report.write_outputs,
     }
 
 
 def main(argv=None) -> int:
-    from curator import screenshots
-    screenshots.set_dpi_aware()
     args = build_parser().parse_args(argv if argv is not None else sys.argv[1:])
     return dispatch(args, _real_deps())
 
